@@ -6,41 +6,112 @@ import fs from 'fs'
 
 let browser = null;
 let page = null;
+let screenshotCounter = 0;
+
+// ================================
+// PAGE CONFIGURATION SYSTEM
+// ================================
+
+const PAGE_DEFINITIONS = {
+  signup: {
+    url: 'https://ui.chaicode.com/auth/signup',
+    name: 'Sign Up',
+    fields: [
+      { label: 'First Name', selector: '#firstName', type: 'text', required: true },
+      { label: 'Last Name', selector: '#lastName', type: 'text', required: true },
+      { label: 'Email', selector: '#email', type: 'email', required: true },
+      { label: 'Password', selector: '#password', type: 'password', required: true },
+      { label: 'Confirm Password', selector: '#confirmPassword', type: 'password', required: true }
+    ],
+    submitSelector: 'button[type="submit"]',
+    submitText: 'Create Account'
+  },
+  login: {
+    url: 'https://ui.chaicode.com/auth/login',
+    name: 'Login',
+    fields: [
+      { label: 'Email', selector: '#email', type: 'email', required: true },
+      { label: 'Password', selector: '#password', type: 'password', required: true }
+    ],
+    submitSelector: 'button[type="submit"]',
+    submitText: 'Sign In'
+  },
+  'forgot-password': {
+    url: 'https://ui.chaicode.com/auth/forgot-password',
+    name: 'Forgot Password',
+    fields: [
+      { label: 'Email', selector: '#email', type: 'email', required: true }
+    ],
+    submitSelector: 'button[type="submit"]',
+    submitText: 'Send Reset Link'
+  },
+  'verify-otp': {
+    url: 'https://ui.chaicode.com/auth/verify-otp',
+    name: 'Verify OTP',
+    fields: [
+      { label: 'OTP Code', selector: '#otp', type: 'text', required: true }
+    ],
+    submitSelector: 'button[type="submit"]',
+    submitText: 'Verify'
+  },
+  'password-reset': {
+    url: 'https://ui.chaicode.com/auth/password-reset',
+    name: 'Password Reset',
+    fields: [
+      { label: 'New Password', selector: '#password', type: 'password', required: true },
+      { label: 'Confirm Password', selector: '#confirmPassword', type: 'password', required: true }
+    ],
+    submitSelector: 'button[type="submit"]',
+    submitText: 'Reset Password'
+  }
+}
+
+const DEFAULT_VALUES = {
+  firstName: 'Dnyaneshwar',
+  lastName: 'Dimble',
+  email: 'dnyaneshwardimble25436@gmail.com',
+  password: 'mySecret123',
+  confirmPassword: 'mySecret123',
+  otp: '123456'
+}
+
+// ================================
+// HELPER FUNCTIONS
+// ================================
 
 async function getPage() {
   if (!browser) {
-    browser = await chromium.launch({ headless: false })
+    browser = await chromium.launch({ 
+      headless: false,
+      channel: "chrome",
+      // args: ["--start-maximized"]
+    })
   }
   if (!page) {
-    page = await browser.newPage()
+    const context = await browser.newContext({ viewport: null })
+    page = await context.newPage()
   }
   return page
 }
 
-let screenshotCounter = 0
-
-// Helper function for ultra-slow filling
 async function fillFieldSlowly(page, selector, text) {
   console.log(`    Ultra-slow fill: "${text}" into ${selector}`)
   
-  // Wait and focus
   await page.waitForSelector(selector, { timeout: 10000, state: 'visible' })
-  await page.waitForTimeout(1000)
+  await page.waitForTimeout(500)
   
-  // Focus and clear
   await page.focus(selector)
-  await page.waitForTimeout(500)
+  await page.waitForTimeout(200)
   await page.click(selector, { clickCount: 3 })
-  await page.waitForTimeout(300)
+  await page.waitForTimeout(100)
   await page.keyboard.press('Delete')
-  await page.waitForTimeout(500)
-  
-  // Type character by character
+  await page.waitForTimeout(200)
+
   for (let i = 0; i < text.length; i++) {
     const char = text[i]
-    await page.keyboard.type(char, { delay: 150 })
-    await page.waitForTimeout(200)
-    
+    await page.keyboard.type(char, { delay: 75 })
+    await page.waitForTimeout(100)
+
     if (i % 3 === 0) {
       const currentVal = await page.inputValue(selector)
       console.log(`      Progress: "${currentVal}"`)
@@ -51,402 +122,681 @@ async function fillFieldSlowly(page, selector, text) {
   return true
 }
 
+// Smart value assignment based on field names/types
+function getSmartDefaultValue(label, type) {
+  const lowerLabel = label.toLowerCase()
+  
+  // Smart matching for different field types
+  if (lowerLabel.includes('first') && lowerLabel.includes('name')) {
+    return DEFAULT_VALUES.firstName
+  }
+  if (lowerLabel.includes('last') && lowerLabel.includes('name')) {
+    return DEFAULT_VALUES.lastName
+  }
+  if (lowerLabel.includes('email')) {
+    return DEFAULT_VALUES.email
+  }
+  if (lowerLabel.includes('password')) {
+    if (lowerLabel.includes('confirm') || lowerLabel.includes('repeat')) {
+      return DEFAULT_VALUES.confirmPassword
+    }
+    return DEFAULT_VALUES.password
+  }
+  if (lowerLabel.includes('otp') || lowerLabel.includes('code') || lowerLabel.includes('verification')) {
+    return DEFAULT_VALUES.otp
+  }
+  if (lowerLabel.includes('phone') || lowerLabel.includes('mobile')) {
+    return '+1234567890'
+  }
+  if (type === 'number') {
+    return '123'
+  }
+  if (type === 'tel') {
+    return '+1234567890'
+  }
+  
+  return null
+}
+
+// ================================
+// ENHANCED AUTOMATION TOOLS
+// ================================
+
+const navigateToPage = tool({
+  name: 'navigate_to_page',
+  description: 'Navigate to a specific auth page',
+  parameters: z.object({
+    pageName: z.enum(['signup', 'login', 'forgot-password', 'verify-otp', 'password-reset']),
+    customValues: z.union([z.record(z.string(), z.string()), z.null()])
+  }),
+  async execute({ pageName, customValues }) {
+    console.log(`\n🌐 Navigating to ${pageName} page...`)
+    
+    const values = customValues || {}
+    
+    try {
+      const pageConfig = PAGE_DEFINITIONS[pageName]
+      if (!pageConfig) {
+        throw new Error(`Unknown page: ${pageName}`)
+      }
+      
+      if (browser) {
+        await browser.close()
+        browser = null
+        page = null
+      }
+      
+      const currentPage = await getPage()
+      await currentPage.goto(pageConfig.url, { waitUntil: 'networkidle' })
+      
+      console.log(`✅ Successfully navigated to ${pageConfig.name}`)
+      console.log(`   URL: ${pageConfig.url}`)
+      console.log(`   Fields to fill: ${pageConfig.fields.length}`)
+      
+      return {
+        success: true,
+        pageName,
+        pageTitle: pageConfig.name,
+        url: pageConfig.url,
+        fieldCount: pageConfig.fields.length,
+        fields: pageConfig.fields.map(f => ({ label: f.label, type: f.type }))
+      }
+    } catch (error) {
+      console.log(`❌ Failed to navigate to ${pageName}: ${error.message}`)
+      return { success: false, error: error.message, pageName }
+    }
+  }
+})
+
+const detectPageFields = tool({
+  name: 'detect_page_fields',
+  description: 'Dynamically detects all form fields on the current page',
+  parameters: z.object({
+    pageName: z.enum(['signup', 'login', 'forgot-password', 'verify-otp', 'password-reset'])
+  }),
+  async execute({ pageName }) {
+    console.log(`\n🔍 Detecting fields on ${pageName} page...`)
+    
+    try {
+      const currentPage = await getPage()
+      const detectedFields = []
+      
+      // Common field selectors to check
+      const fieldSelectors = [
+        'input[type="text"]',
+        'input[type="email"]', 
+        'input[type="password"]',
+        'input[type="tel"]',
+        'input[type="number"]',
+        'textarea'
+      ]
+      
+      for (const selector of fieldSelectors) {
+        const elements = await currentPage.locator(selector).all()
+        
+        for (const element of elements) {
+          try {
+            const id = await element.getAttribute('id')
+            const name = await element.getAttribute('name')
+            const placeholder = await element.getAttribute('placeholder')
+            const type = await element.getAttribute('type')
+            const isVisible = await element.isVisible()
+            
+            if (isVisible && (id || name)) {
+              // Try to find associated label
+              let label = ''
+              if (id) {
+                try {
+                  const labelElement = await currentPage.locator(`label[for="${id}"]`).first()
+                  label = await labelElement.textContent()
+                } catch (e) {
+                  // Try to find label by proximity
+                  try {
+                    const parentLabel = await element.locator('..').locator('label').first()
+                    label = await parentLabel.textContent()
+                  } catch (e2) {
+                    label = placeholder || id || name || 'Unknown Field'
+                  }
+                }
+              }
+              
+              detectedFields.push({
+                label: label?.trim() || placeholder || id || name,
+                selector: id ? `#${id}` : `[name="${name}"]`,
+                type: type || 'text',
+                id: id,
+                name: name,
+                placeholder: placeholder
+              })
+            }
+          } catch (error) {
+            console.log(`  ⚠️ Could not analyze element: ${error.message}`)
+          }
+        }
+      }
+      
+      console.log(`✅ Detected ${detectedFields.length} fields:`)
+      detectedFields.forEach((field, index) => {
+        console.log(`  ${index + 1}. ${field.label} (${field.selector})`)
+      })
+      
+      return {
+        success: true,
+        pageName,
+        detectedFields,
+        fieldCount: detectedFields.length
+      }
+      
+    } catch (error) {
+      console.log(`❌ Failed to detect fields on ${pageName}: ${error.message}`)
+      return { success: false, error: error.message, pageName }
+    }
+  }
+})
+
+const smartProcessPageForm = tool({
+  name: 'smart_process_page_form',
+  description: 'Intelligently processes form using both predefined config and dynamic detection',
+  parameters: z.object({
+    pageName: z.enum(['signup', 'login', 'forgot-password', 'verify-otp', 'password-reset']),
+    customValues: z.union([z.record(z.string(), z.string()), z.null()]),
+    useDetection: z.union([z.boolean(), z.null()])
+  }),
+  async execute({ pageName, customValues, useDetection }) {
+    console.log(`\n🧠 Smart processing ${pageName} form...`)
+    
+    const values = customValues || {}
+    const shouldDetect = useDetection || false
+    
+    try {
+      // Start with predefined configuration
+      const pageConfig = PAGE_DEFINITIONS[pageName]
+      let fieldsToProcess = [...pageConfig.fields]
+      
+      // Optionally detect additional fields
+      if (shouldDetect) {
+        console.log(`🔍 Running dynamic field detection...`)
+        const currentPage = await getPage()
+        
+        // Detect fields dynamically
+        const allInputs = await currentPage.locator('input, textarea').all()
+        
+        for (const input of allInputs) {
+          try {
+            const id = await input.getAttribute('id')
+            const type = await input.getAttribute('type')
+            const placeholder = await input.getAttribute('placeholder')
+            const isVisible = await input.isVisible()
+            
+            if (isVisible && id && !fieldsToProcess.some(f => f.selector === `#${id}`)) {
+              // Find label for this input
+              let label = placeholder || id
+              try {
+                const labelElement = await currentPage.locator(`label[for="${id}"]`).first()
+                const labelText = await labelElement.textContent()
+                if (labelText) label = labelText.trim()
+              } catch (e) {
+                // Label not found, use placeholder or id
+              }
+              
+              fieldsToProcess.push({
+                label: label,
+                selector: `#${id}`,
+                type: type || 'text',
+                required: false,
+                detected: true
+              })
+              
+              console.log(`  ➕ Detected additional field: ${label} (${id})`)
+            }
+          } catch (error) {
+            // Skip problematic elements
+          }
+        }
+      }
+      
+      console.log(`📋 Processing ${fieldsToProcess.length} fields total`)
+      
+      const currentPage = await getPage()
+      const results = []
+      
+      // Process each field
+      for (const fieldConfig of fieldsToProcess) {
+        console.log(`\n--- Processing ${fieldConfig.label} field ${fieldConfig.detected ? '(detected)' : '(predefined)'} ---`)
+        
+        // Determine value to use with smart matching
+        let valueToUse = 
+          values[fieldConfig.label] || 
+          values[fieldConfig.selector.replace('#', '')] ||
+          values[fieldConfig.label.toLowerCase().replace(/\s+/g, '')] ||
+          getSmartDefaultValue(fieldConfig.label, fieldConfig.type) ||
+          'defaultValue123'
+        
+        console.log(`  Using value: "${valueToUse}"`)
+        
+        // Fill the field with retry logic
+        let attempt = 0
+        let success = false
+        const maxRetries = 2
+        
+        while (attempt <= maxRetries && !success) {
+          attempt++
+          console.log(`  Attempt ${attempt}/${maxRetries + 1}`)
+          
+          try {
+            await fillFieldSlowly(currentPage, fieldConfig.selector, valueToUse)
+            
+            // Verify immediately
+            await currentPage.waitForTimeout(1000)
+            const actualValue = await currentPage.inputValue(fieldConfig.selector)
+            
+            if (actualValue === valueToUse) {
+              console.log(`  ✅ ${fieldConfig.label}: "${actualValue}"`)
+              success = true
+            } else {
+              console.log(`  ❌ ${fieldConfig.label}: Expected "${valueToUse}", got "${actualValue}"`)
+              if (attempt <= maxRetries) {
+                await currentPage.waitForTimeout(2000)
+              }
+            }
+          } catch (error) {
+            console.log(`  ❌ Error filling ${fieldConfig.label}: ${error.message}`)
+          }
+        }
+        
+        results.push({
+          field: fieldConfig.label,
+          selector: fieldConfig.selector,
+          expectedValue: valueToUse,
+          actualValue: await currentPage.inputValue(fieldConfig.selector),
+          success,
+          attempts: attempt,
+          detected: fieldConfig.detected || false
+        })
+      }
+      
+      // Final verification
+      const allSuccess = results.every(r => r.success)
+      const predefinedCount = results.filter(r => !r.detected).length
+      const detectedCount = results.filter(r => r.detected).length
+      
+      console.log(`\n📊 Smart Processing Summary:`)
+      console.log(`   Predefined fields: ${results.filter(r => r.success && !r.detected).length}/${predefinedCount}`)
+      console.log(`   Detected fields: ${results.filter(r => r.success && r.detected).length}/${detectedCount}`)
+      console.log(`   Total success: ${results.filter(r => r.success).length}/${results.length}`)
+      
+      return {
+        success: allSuccess,
+        pageName,
+        results,
+        fieldsProcessed: results.length,
+        successCount: results.filter(r => r.success).length,
+        predefinedCount,
+        detectedCount,
+        readyForSubmit: allSuccess
+      }
+      
+    } catch (error) {
+      console.log(`❌ Failed to smart process ${pageName} form: ${error.message}`)
+      return { success: false, error: error.message, pageName }
+    }
+  }
+})
+
+const processPageForm = tool({
+  name: 'process_page_form',
+  description: 'Process form using only predefined PAGE_DEFINITIONS',
+  parameters: z.object({
+    pageName: z.enum(['signup', 'login', 'forgot-password', 'verify-otp', 'password-reset']),
+    customValues: z.union([z.record(z.string(), z.string()), z.null()]),
+    skipSubmit: z.union([z.boolean(), z.null()])
+  }),
+  async execute({ pageName, customValues, skipSubmit }) {
+    console.log(`\n📝 Processing ${pageName} form (predefined only)...`)
+    
+    const values = customValues || {}
+    const shouldSkipSubmit = skipSubmit || false
+    
+    try {
+      const pageConfig = PAGE_DEFINITIONS[pageName]
+      if (!pageConfig) {
+        throw new Error(`Unknown page: ${pageName}`)
+      }
+      
+      const currentPage = await getPage()
+      const results = []
+      
+      // Process each predefined field
+      for (const fieldConfig of pageConfig.fields) {
+        console.log(`\n--- Processing ${fieldConfig.label} field ---`)
+        
+        // Determine value to use
+        let valueToUse = values[fieldConfig.label] || 
+                        values[fieldConfig.selector.replace('#', '')] ||
+                        DEFAULT_VALUES[fieldConfig.selector.replace('#', '')] ||
+                        DEFAULT_VALUES[fieldConfig.label.toLowerCase().replace(' ', '')] ||
+                        'defaultValue123'
+        
+        console.log(`  Using value: "${valueToUse}"`)
+        
+        // Fill the field
+        let attempt = 0
+        let success = false
+        const maxRetries = 2
+        
+        while (attempt <= maxRetries && !success) {
+          attempt++
+          console.log(`  Attempt ${attempt}/${maxRetries + 1}`)
+          
+          try {
+            await fillFieldSlowly(currentPage, fieldConfig.selector, valueToUse)
+            
+            // Verify immediately
+            await currentPage.waitForTimeout(1000)
+            const actualValue = await currentPage.inputValue(fieldConfig.selector)
+            
+            if (actualValue === valueToUse) {
+              console.log(`  ✅ ${fieldConfig.label}: "${actualValue}"`)
+              success = true
+            } else {
+              console.log(`  ❌ ${fieldConfig.label}: Expected "${valueToUse}", got "${actualValue}"`)
+              if (attempt <= maxRetries) {
+                await currentPage.waitForTimeout(2000)
+              }
+            }
+          } catch (error) {
+            console.log(`  ❌ Error filling ${fieldConfig.label}: ${error.message}`)
+          }
+        }
+        
+        results.push({
+          field: fieldConfig.label,
+          selector: fieldConfig.selector,
+          expectedValue: valueToUse,
+          actualValue: await currentPage.inputValue(fieldConfig.selector),
+          success,
+          attempts: attempt
+        })
+      }
+      
+      // Final verification
+      const allSuccess = results.every(r => r.success)
+      console.log(`\n📊 Form Processing Summary: ${results.filter(r => r.success).length}/${results.length} fields successful`)
+      
+      return {
+        success: allSuccess,
+        pageName,
+        results,
+        fieldsProcessed: results.length,
+        successCount: results.filter(r => r.success).length,
+        readyForSubmit: allSuccess && !shouldSkipSubmit
+      }
+      
+    } catch (error) {
+      console.log(`❌ Failed to process ${pageName} form: ${error.message}`)
+      return { success: false, error: error.message, pageName }
+    }
+  }
+})
+
+const submitForm = tool({
+  name: 'submit_form',
+  description: 'Submit the current form if all validations pass',
+  parameters: z.object({
+    pageName: z.enum(['signup', 'login', 'forgot-password', 'verify-otp', 'password-reset'])
+  }),
+  async execute({ pageName }) {
+    console.log(`\n🚀 Submitting ${pageName} form...`)
+    
+    try {
+      const pageConfig = PAGE_DEFINITIONS[pageName]
+      const currentPage = await getPage()
+      
+      // Wait for submit button to be ready
+      await currentPage.waitForSelector(pageConfig.submitSelector, { timeout: 10000, state: 'visible' })
+      await currentPage.waitForTimeout(1000)
+      
+      // Click submit
+      await currentPage.click(pageConfig.submitSelector)
+      
+      console.log(`✅ Form submitted successfully`)
+      
+      // Wait a moment to see result
+      await currentPage.waitForTimeout(3000)
+      
+      return {
+        success: true,
+        pageName,
+        submitText: pageConfig.submitText,
+        message: 'Form submitted successfully'
+      }
+      
+    } catch (error) {
+      console.log(`❌ Failed to submit ${pageName} form: ${error.message}`)
+      return { success: false, error: error.message, pageName }
+    }
+  }
+})
+
 const takeScreenShot = tool({
   name: 'take_screenshot',
   description: 'Takes a screenshot and saves it locally',
   parameters: z.object({
-    format: z.enum(['png', 'jpeg']),
-    quality: z.number().min(0).max(100).nullable()
+    description: z.union([z.string(), z.null()])
   }),
-  async execute({ format = 'png', quality }) {
-    console.log('Taking screenshot...')
-    const page = await getPage()
+  async execute({ description }) {
+    const desc = description || ''
+    console.log(`📸 Taking screenshot... ${desc}`)
+    const currentPage = await getPage()
     screenshotCounter++
 
-    const options = { type: format }
-    if (quality !== null && quality !== undefined) {
-      options.quality = quality
-    }
-
-    const buffer = await page.screenshot(options)
-    const filename = `step-${screenshotCounter}.${format}`
+    const buffer = await currentPage.screenshot({ type: 'png', fullPage: true })
+    const filename = `step-${screenshotCounter}-${desc.replace(/\s+/g, '-') || 'screenshot'}.png`
     fs.writeFileSync(filename, buffer)
     console.log(`📸 Screenshot saved: ${filename}`)
 
     return { 
       success: true,
       filename: filename,
-      step: screenshotCounter
+      step: screenshotCounter,
+      description: desc
     }
   }
 })
 
-const openBrowser = tool({
-  name: 'open_browser',
-  description: 'Opens a new browser window and navigates to URL with maximize option',
-  parameters: z.object({
-    url: z.string(),
-    width: z.number().min(100).nullable(),
-    height: z.number().min(100).nullable(),
-    maximize: z.boolean().default(true).describe('Whether to maximize the browser window')
-  }),
-  async execute({ url, width, height, maximize = true }) {
-    console.log('Opening browser...')
-    if (browser) {
-      await browser.close()
-    }
-    
-    // Launch browser with maximize arguments if requested[129][133]
-    const launchOptions = {
-      headless: false,
-      channel: "chrome"
-    }
-    
-    if (maximize) {
-      launchOptions.args = ["--start-maximized"]
-      console.log('🔍 Browser will launch maximized')
-    }
-    
-    browser = await chromium.launch(launchOptions)
-    
-    // Create context with null viewport for full maximization[129][133]
-    const contextOptions = {}
-    if (maximize) {
-      contextOptions.viewport = null // This allows dynamic viewport sizing[133]
-    } else if (width !== null && height !== null) {
-      contextOptions.viewport = { width, height }
-    }
-    
-    const context = await browser.newContext(contextOptions)
-    page = await context.newPage()
-    
-    // Additional viewport setting if specific dimensions requested
-    if (!maximize && width !== null && height !== null) {
-      await page.setViewportSize({ width, height })
-    }
-    
-    await page.goto(url, { waitUntil: 'networkidle' })
-    
-    console.log(`✅ Browser opened${maximize ? ' (maximized)' : ''} and navigated to ${url}`)
-    
-    return { 
-      status: 'browser_opened', 
-      url, 
-      maximized: maximize,
-      viewport: maximize ? 'dynamic' : `${width}x${height}`
-    }
-  }
-})
+// ================================
+// ENHANCED AI AGENT
+// ================================
 
-
-const processField = tool({
-  name: 'process_field',
-  description: 'Process a single field: find by label, fill, verify, retry if needed',
-  parameters: z.object({
-    labelText: z.string().describe('The label text to find the field'),
-    value: z.string().describe('Value to type into the field'),
-    maxRetries: z.number().default(2).describe('Maximum retry attempts')
-  }),
-  async execute({ labelText, value, maxRetries = 2 }) {
-    console.log(`\n=== Processing field: "${labelText}" with value: "${value}" ===`)
-    const page = await getPage()
-    
-    try {
-      // Step 1: Find the input field using the label
-      console.log(`Step 1: Finding field by label "${labelText}"...`)
-      
-      // Find label and get its 'for' attribute or find input within same container
-      let inputSelector
-      try {
-        // Method 1: Find label with text, then get the 'for' attribute
-        const labelElement = await page.locator(`label:has-text("${labelText}")`).first()
-        const forAttribute = await labelElement.getAttribute('for')
-        if (forAttribute) {
-          inputSelector = `#${forAttribute}`
-          console.log(`  Found input by 'for' attribute: ${inputSelector}`)
-        }
-      } catch (error) {
-        // Method 2: Find input based on common patterns
-        if (labelText.includes('First Name')) inputSelector = '#firstName'
-        else if (labelText.includes('Last Name')) inputSelector = '#lastName'  
-        else if (labelText.includes('Email')) inputSelector = '#email'
-        else if (labelText.includes('Password') && !labelText.includes('Confirm')) inputSelector = '#password'
-        else if (labelText.includes('Confirm')) inputSelector = '#confirmPassword'
-        console.log(`  Using fallback selector: ${inputSelector}`)
-      }
-      
-      if (!inputSelector) {
-        throw new Error(`Could not find input for label: ${labelText}`)
-      }
-      
-      let attempt = 0
-      let success = false
-      
-      while (attempt <= maxRetries && !success) {
-        attempt++
-        console.log(`\nAttempt ${attempt}/${maxRetries + 1} for "${labelText}"`)
-        
-        // Step 2: Fill the field using ultra-slow method
-        console.log(`Step 2: Filling field ${inputSelector}...`)
-        const fillResult = await fillFieldSlowly(page, inputSelector, value)
-        
-        // Step 3: Verify the field immediately
-        console.log(`Step 3: Verifying field value...`)
-        await page.waitForTimeout(1000) // Wait for value to settle
-        const actualValue = await page.inputValue(inputSelector)
-        
-        if (actualValue === value) {
-          console.log(`✅ SUCCESS: "${labelText}" correctly filled with "${actualValue}"`)
-          success = true
-        } else {
-          console.log(`❌ MISMATCH: "${labelText}" expected "${value}" but got "${actualValue}"`)
-          if (attempt <= maxRetries) {
-            console.log(`  Retrying in 2 seconds...`)
-            await page.waitForTimeout(2000)
-          }
-        }
-      }
-      
-      return {
-        success,
-        labelText,
-        inputSelector,
-        expectedValue: value,
-        actualValue: await page.inputValue(inputSelector),
-        attempts: attempt
-      }
-      
-    } catch (error) {
-      console.log(`❌ ERROR processing field "${labelText}": ${error.message}`)
-      return { success: false, error: error.message, labelText }
-    }
-  }
-})
-
-const verifyAndRetryField = tool({
-  name: 'verify_and_retry_field',
-  description: 'Verify a field and retry filling if verification fails',
-  parameters: z.object({
-    selector: z.string().describe('CSS selector for the input field'),
-    expectedValue: z.string().describe('The expected value'),
-    labelName: z.string().describe('Human readable field name')
-  }),
-  async execute({ selector, expectedValue, labelName }) {
-    console.log(`\n--- Verifying "${labelName}" field ---`)
-    const page = await getPage()
-    
-    try {
-      await page.waitForSelector(selector, { timeout: 5000, state: 'visible' })
-      const actualValue = await page.inputValue(selector)
-      
-      if (actualValue === expectedValue) {
-        console.log(`✅ VERIFIED: ${labelName} = "${actualValue}"`)
-        return { success: true, selector, expectedValue, actualValue, fieldName: labelName }
-      } else {
-        console.log(`❌ VERIFICATION FAILED: ${labelName}`)
-        console.log(`   Expected: "${expectedValue}"`)
-        console.log(`   Actual:   "${actualValue}"`)
-        console.log(`   Attempting one retry...`)
-        
-        // One retry attempt
-        await fillFieldSlowly(page, selector, expectedValue)
-        await page.waitForTimeout(1000)
-        
-        const retryValue = await page.inputValue(selector)
-        const retrySuccess = retryValue === expectedValue
-        
-        console.log(`   Retry result: ${retrySuccess ? '✅ SUCCESS' : '❌ FAILED'}`)
-        console.log(`   Final value: "${retryValue}"`)
-        
-        return { 
-          success: retrySuccess, 
-          selector, 
-          expectedValue, 
-          actualValue: retryValue, 
-          fieldName: labelName,
-          wasRetried: true 
-        }
-      }
-    } catch (error) {
-      console.log(`❌ ERROR verifying ${labelName}: ${error.message}`)
-      return { success: false, error: error.message, fieldName: labelName }
-    }
-  }
-})
-
-const verifyFormData = tool({
-  name: 'verify_form_data',
-  description: 'Verifies all form fields have correct values',
-  parameters: z.object({
-    firstName: z.string(),
-    lastName: z.string(),
-    email: z.string(),
-    password: z.string(),
-    confirmPassword: z.string()
-  }),
-  async execute({ firstName, lastName, email, password, confirmPassword }) {
-    console.log('\n🔍 Verifying all form fields...')
-    const page = await getPage()
-    
-    const fieldChecks = [
-      { selector: '#firstName', expected: firstName, name: 'First Name' },
-      { selector: '#lastName', expected: lastName, name: 'Last Name' },
-      { selector: '#email', expected: email, name: 'Email' },
-      { selector: '#password', expected: password, name: 'Password' },
-      { selector: '#confirmPassword', expected: confirmPassword, name: 'Confirm Password' }
-    ]
-    
-    const results = []
-    let allPassed = true
-    
-    for (const check of fieldChecks) {
-      try {
-        const actualValue = await page.inputValue(check.selector)
-        const passed = actualValue === check.expected
-        
-        if (passed) {
-          console.log(`✅ ${check.name}: "${actualValue}" ✓`)
-        } else {
-          console.log(`❌ ${check.name}: Expected "${check.expected}", got "${actualValue}"`)
-          allPassed = false
-        }
-        
-        results.push({
-          field: check.name,
-          selector: check.selector,
-          expected: check.expected,
-          actual: actualValue,
-          passed
-        })
-      } catch (error) {
-        console.log(`❌ ${check.name}: Error - ${error.message}`)
-        results.push({
-          field: check.name,
-          selector: check.selector,
-          expected: check.expected,
-          actual: null,
-          passed: false,
-          error: error.message
-        })
-        allPassed = false
-      }
-    }
-    
-    console.log(`\n📊 Form Verification Summary: ${results.filter(r => r.passed).length}/${results.length} fields correct`)
-    
-    return {
-      success: allPassed,
-      allFieldsPassed: allPassed,
-      results,
-      summary: `${results.filter(r => r.passed).length}/${results.length} fields correct`
-    }
-  }
-})
-
-const clickElement = tool({
-  name: 'click_element',
-  description: 'Clicks on an element using CSS selector',
-  parameters: z.object({
-    selector: z.string().describe('CSS selector for the element to click')
-  }),
-  async execute({ selector }) {
-    console.log(`\n🖱️ Attempting to click: ${selector}`)
-    const page = await getPage()
-    
-    try {
-      await page.waitForSelector(selector, { timeout: 10000, state: 'visible' })
-      await page.click(selector)
-      
-      console.log(`✅ Successfully clicked ${selector}`)
-      return { success: true, clicked: selector }
-    } catch (error) {
-      console.log(`❌ Failed to click ${selector}: ${error.message}`)
-      return { success: false, error: error.message, selector }
-    }
-  }
-})
-
-const websiteAutomationAgent = new Agent({
-  name: 'website_automation_agent',
+const enhancedMultiPageAgent = new Agent({
+  name: 'enhanced_multi_page_agent',
   model: 'gpt-4o',
   instructions: `
-You are a methodical website automation agent. Follow this EXACT step-by-step process:
+You are an enhanced multi-page automation agent with smart field detection capabilities.
 
-PHASE 1: SETUP
-1. Use open_browser to navigate to the signup URL with maximize=true
-2. Take screenshot to see the initial page
+CAPABILITIES:
+- Use predefined PAGE_DEFINITIONS for known field structures
+- Dynamically detect additional fields not in predefined config
+- Smart value assignment based on field names and types
+- Comprehensive field processing with retry logic
 
-PHASE 2: FIELD-BY-FIELD PROCESSING
-For each field, follow this pattern:
-3. Use process_field for "First Name" with value "Dnyaneshwar"
-4. Use verify_and_retry_field to verify firstName field (#firstName)
-5. Use process_field for "Last Name" with value "Dimble"  
-6. Use verify_and_retry_field to verify lastName field (#lastName)
-7. Use process_field for "Email" with value "mavi@example.com"
-8. Use verify_and_retry_field to verify email field (#email)
-9. Use process_field for "Password" with value "mySecret123"
-10. Use verify_and_retry_field to verify password field (#password)
-11. Use process_field for "Confirm Password" with value "mySecret123"
-12. Use verify_and_retry_field to verify confirmPassword field (#confirmPassword)
+WORKFLOW OPTIONS:
 
-PHASE 3: FINAL VALIDATION
-13. Use verify_form_data to check ALL fields are correct with these values:
-    firstName: "Dnyaneshwar", lastName: "Dimble", email: "mavi@example.com", 
-    password: "mySecret123", confirmPassword: "mySecret123"
-14. Take screenshot showing completed form
-15. ONLY if verify_form_data passes, use click_element with selector "button[type='submit']"
-16. Take final screenshot
+OPTION 1 - Use Predefined Config Only:
+1. Use navigate_to_page 
+2. Use process_page_form with skipSubmit=null
+3. Submit form
 
-CRITICAL RULES:
-- Process ONE field at a time
-- Verify each field immediately after filling
-- Retry failed fields once
-- Only submit if ALL verifications pass
-- Always use the process_field tool first, then verify_and_retry_field
-- Use exact field selectors: #firstName, #lastName, #email, #password, #confirmPassword
+OPTION 2 - Use Smart Detection (RECOMMENDED):
+1. Use navigate_to_page
+2. Use smart_process_page_form with useDetection=true
+3. This combines predefined + detected fields
+4. Submit form
+
+OPTION 3 - Detect Fields First:
+1. Use navigate_to_page
+2. Use detect_page_fields to see all available fields
+3. Use smart_process_page_form based on detection results
+
+SMART VALUE MATCHING:
+- firstName, lastName, email, password automatically detected
+- OTP, phone, verification codes handled intelligently
+- Custom values override smart defaults
+- Fallback to safe default values for unknown fields
+
+The system is now hybrid - uses your predefined PAGE_DEFINITIONS but can discover and handle additional fields dynamically.
 `,
-  tools: [takeScreenShot, openBrowser, processField, verifyAndRetryField, verifyFormData, clickElement]
+  tools: [navigateToPage, processPageForm, smartProcessPageForm, detectPageFields, submitForm, takeScreenShot]
 })
 
-async function main() {
+// ================================
+// EXECUTION FUNCTIONS
+// ================================
+
+async function processSinglePage(pageName, customValues = {}) {
   try {
-    console.log('\n🚀 Starting Step-by-Step Form Automation...\n')
+    console.log(`\n🎯 Processing ${pageName} page...`)
     
     const result = await run(
-      websiteAutomationAgent,
-      `Navigate to https://ui.chaicode.com/auth/signup and create an account using this methodical approach:
+      enhancedMultiPageAgent,
+      `Process the ${pageName} page with smart detection:
+      
+      1. Navigate to ${pageName} page (pass null for customValues)
+      2. Take screenshot with description "initial-${pageName}-page"
+      3. Use smart_process_page_form with useDetection=true to combine predefined + detected fields
+      4. Take screenshot with description "filled-${pageName}-form"  
+      5. Submit the form if all validations pass
+      6. Take screenshot with description "submitted-${pageName}-form"
 
-STEP-BY-STEP FIELD PROCESSING:
-1. Process "First Name" field with "Dnyaneshwar" 
-2. Verify firstName field (#firstName) has exactly "Dnyaneshwar"
-3. Process "Last Name" field with "Dimble"
-4. Verify lastName field (#lastName) has exactly "Dimble"  
-5. Process "Email" field with "mavi@example.com"
-6. Verify email field (#email) has exactly "mavi@example.com"
-7. Process "Password" field with "mySecret123"
-8. Verify password field (#password) has exactly "mySecret123"
-9. Process "Confirm Password" field with "mySecret123" 
-10. Verify confirmPassword field (#confirmPassword) has exactly "mySecret123"
+      Use default values: firstName="Dnyaneshwar", lastName="Dimble", email="dnyaneshwardimble25436@gmail.com", password="mySecret123", otp="123456"
 
-FINAL VALIDATION:
-11. Verify ALL form data is correct using verify_form_data
-12. Take screenshot showing completed form
-13. ONLY submit if all verifications pass by clicking button[type="submit"]
-
-Use process_field for filling and verify_and_retry_field for verification. Retry any failed fields once before proceeding.`
+      Expected field counts:
+      - signup: 5 fields (firstName, lastName, email, password, confirmPassword)
+      - login: 2 fields (email, password)
+      - forgot-password: 1 field (email)
+      - verify-otp: 1 field (otp)
+      - password-reset: 2 fields (password, confirmPassword)`
     )
     
-    console.log('\n✅ Automation completed successfully!')
-    console.log('Final result:', result)
-    
+    console.log('\n✅ Single page processing completed:', result)
+    return result
   } catch (error) {
-    console.error('\n❌ Automation failed:', error)
+    console.error('\n❌ Error processing single page:', error)
+    throw error
+  }
+}
+
+async function processMultiplePages() {
+  const pagesToProcess = [
+    { 
+      name: 'signup', 
+      values: {
+        firstName: 'Dnyaneshwar',
+        lastName: 'Dimble', 
+        email: 'dnyaneshwardimble25436@gmail.com.com',
+        password: 'signupPass123',
+        confirmPassword: 'signupPass123'
+      }
+    },
+    { 
+      name: 'login', 
+      values: { 
+        email: 'dnyaneshwardimble25436@gmail.com',
+        password: 'loginPass123' 
+      } 
+    },
+    { 
+      name: 'forgot-password', 
+      values: { 
+        email: 'dnyaneshwardimble25436@gmail.com' 
+      } 
+    },
+    { 
+      name: 'verify-otp', 
+      values: { 
+        otp: '987654' 
+      } 
+    },
+    { 
+      name: 'password-reset', 
+      values: { 
+        password: 'newPass123',
+        confirmPassword: 'newPass123' 
+      } 
+    }
+  ]
+  
+  console.log(`\n🔄 Processing ${pagesToProcess.length} pages in sequence...`)
+  
+  for (let i = 0; i < pagesToProcess.length; i++) {
+    const pageConfig = pagesToProcess[i]
+    
+    console.log(`\n${'='.repeat(60)}`)
+    console.log(`🎯 PROCESSING PAGE ${i + 1}/${pagesToProcess.length}: ${pageConfig.name.toUpperCase()}`)
+    console.log(`${'='.repeat(60)}`)
+    
+    try {
+      await processSinglePage(pageConfig.name, pageConfig.values)
+      console.log(`✅ Successfully completed ${pageConfig.name}`)
+      
+      // Wait between pages (except for the last one)
+      if (i < pagesToProcess.length - 1) {
+        console.log('\n⏳ Waiting 3 seconds before next page...')
+        await new Promise(resolve => setTimeout(resolve, 3000))
+      }
+    } catch (error) {
+      console.error(`❌ Error processing ${pageConfig.name}:`, error.message)
+      console.log('🔄 Continuing with next page...')
+    }
+  }
+  
+  console.log('\n🎉 All pages processing completed!')
+}
+
+// ================================
+// MAIN EXECUTION
+// ================================
+
+async function main() {
+  const mode = process.argv[2] || 'single';
+  const pageName = process.argv[3] || 'signup';
+  
+  console.log('\n🚀 Starting Enhanced Dynamic Multi-Page Automation System')
+  console.log(`Mode: ${mode}`)
+  
+  if (mode === 'single') {
+    console.log(`Page: ${pageName}`)
+  }
+  
+  try {
+    if (mode === 'multi') {
+      // Process all pages in sequence
+      await processMultiplePages()
+    } else {
+      // Process single page
+      await processSinglePage(pageName)
+    }
+  } catch (error) {
+    console.error('\n💥 Fatal error:', error)
   } finally {
     if (browser) {
-      console.log('\n🔒 Closing browser...')
       await browser.close()
     }
+    console.log('\n👋 Automation completed!')
   }
 }
 
 main().catch(console.error)
+
+
+// For Multiple Page Processing
+// node index.js multi = this will automate the entire multi-page process 
+
+
+//For Single Page Processing
+// node index.js single signup
+// node index.js single login
+// node index.js single forgot-password
+// node index.js single verify-otp
+// node index.js single password-reset
+
